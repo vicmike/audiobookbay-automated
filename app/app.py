@@ -1,12 +1,41 @@
-import os, re, requests
-from flask import Flask, request, render_template, jsonify
+import logging
+import os
+import re
+from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse
+
+import requests
 from bs4 import BeautifulSoup
-from qbittorrentapi import Client
-from transmission_rpc import Client as transmissionrpc
 from deluge_web_client import DelugeWebClient as delugewebclient
 from dotenv import load_dotenv
-from urllib.parse import urlparse
+from flask import Flask, jsonify, render_template, request
+from qbittorrentapi import Client
+from transmission_rpc import Client as transmissionrpc
+
 app = Flask(__name__)
+
+
+# Configure logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_FILE = os.getenv("LOG_FILE", "logs/app.log")
+
+log_dir = os.path.dirname(LOG_FILE)
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
+
+log_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+)
+
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(log_formatter)
+
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=5)
+file_handler.setFormatter(log_formatter)
+
+logging.basicConfig(level=LOG_LEVEL, handlers=[stream_handler, file_handler])
+
+logger = logging.getLogger(__name__)
 
 #Load environment variables
 load_dotenv()
@@ -40,18 +69,18 @@ SAVE_PATH_BASE = os.getenv("SAVE_PATH_BASE")
 NAV_LINK_NAME = os.getenv("NAV_LINK_NAME")
 NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 
-#Print configuration
-print(f"ABB_HOSTNAME: {ABB_HOSTNAME}")
-print(f"DOWNLOAD_CLIENT: {DOWNLOAD_CLIENT}")
-print(f"DL_HOST: {DL_HOST}")
-print(f"DL_PORT: {DL_PORT}")
-print(f"DL_URL: {DL_URL}")
-print(f"DL_USERNAME: {DL_USERNAME}")
-print(f"DL_CATEGORY: {DL_CATEGORY}")
-print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
-print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
-print(f"NAV_LINK_URL: {NAV_LINK_URL}")
-print(f"PAGE_LIMIT: {PAGE_LIMIT}")
+# Print configuration
+logger.info("ABB_HOSTNAME: %s", ABB_HOSTNAME)
+logger.info("DOWNLOAD_CLIENT: %s", DOWNLOAD_CLIENT)
+logger.info("DL_HOST: %s", DL_HOST)
+logger.info("DL_PORT: %s", DL_PORT)
+logger.info("DL_URL: %s", DL_URL)
+logger.info("DL_USERNAME: %s", DL_USERNAME)
+logger.info("DL_CATEGORY: %s", DL_CATEGORY)
+logger.info("SAVE_PATH_BASE: %s", SAVE_PATH_BASE)
+logger.info("NAV_LINK_NAME: %s", NAV_LINK_NAME)
+logger.info("NAV_LINK_URL: %s", NAV_LINK_URL)
+logger.info("PAGE_LIMIT: %s", PAGE_LIMIT)
 
 
 @app.context_processor
@@ -73,7 +102,9 @@ def search_audiobookbay(query, max_pages=PAGE_LIMIT):
         url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}&cat=undefined%2Cundefined"
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
+            logger.error(
+                "Failed to fetch page %s. Status Code: %s", page, response.status_code
+            )
             break
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -84,7 +115,7 @@ def search_audiobookbay(query, max_pages=PAGE_LIMIT):
                 cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
                 results.append({'title': title, 'link': link, 'cover': cover})
             except Exception as e:
-                print(f"[ERROR] Skipping post due to error: {e}")
+                logger.exception("Skipping post due to error: %s", e)
                 continue
     return results
 
@@ -96,7 +127,9 @@ def extract_magnet_link(details_url):
     try:
         response = requests.get(details_url, headers=headers)
         if response.status_code != 200:
-            print(f"[ERROR] Failed to fetch details page. Status Code: {response.status_code}")
+            logger.error(
+                "Failed to fetch details page. Status Code: %s", response.status_code
+            )
             return None
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -104,7 +137,7 @@ def extract_magnet_link(details_url):
         # Extract Info Hash
         info_hash_row = soup.find('td', string=re.compile(r'Info Hash', re.IGNORECASE))
         if not info_hash_row:
-            print("[ERROR] Info Hash not found on the page.")
+            logger.error("Info Hash not found on the page.")
             return None
         info_hash = info_hash_row.find_next_sibling('td').text.strip()
 
@@ -113,7 +146,7 @@ def extract_magnet_link(details_url):
         trackers = [row.text.strip() for row in tracker_rows]
 
         if not trackers:
-            print("[WARNING] No trackers found on the page. Using default trackers.")
+            logger.warning("No trackers found on the page. Using default trackers.")
             trackers = [
                 "udp://tracker.openbittorrent.com:80",
                 "udp://opentor.org:2710",
@@ -127,11 +160,11 @@ def extract_magnet_link(details_url):
         trackers_query = "&".join(f"tr={requests.utils.quote(tracker)}" for tracker in trackers)
         magnet_link = f"magnet:?xt=urn:btih:{info_hash}&{trackers_query}"
 
-        print(f"[DEBUG] Generated Magnet Link: {magnet_link}")
+        logger.debug("Generated Magnet Link: %s", magnet_link)
         return magnet_link
 
     except Exception as e:
-        print(f"[ERROR] Failed to extract magnet link: {e}")
+        logger.exception("Failed to extract magnet link: %s", e)
         return None
 
 # Helper function to sanitize titles
@@ -151,7 +184,7 @@ def search():
                 books = search_audiobookbay(query)
         return render_template('search.html', books=books)
     except Exception as e:
-        print(f"[ERROR] Failed to search: {e}")
+        logger.exception("Failed to search: %s", e)
         return render_template('search.html', books=books, error=f"Failed to search. { str(e) }")
 
 
@@ -183,12 +216,28 @@ def send():
         elif DOWNLOAD_CLIENT == "delugeweb":
             delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
             delugeweb.login()
-            delugeweb.add_torrent_magnet(magnet_link, save_directory=save_path, label=DL_CATEGORY)
+            try:
+                delugeweb.add_torrent_magnet(
+                    magnet_link, save_directory=save_path, label=DL_CATEGORY
+                )
+            except Exception as deluge_error:
+                error_message = str(deluge_error)
+                logger.warning(
+                    "Deluge raised an error when applying label: %s", error_message
+                )
+                if "Unknown method" in error_message and "label" in error_message:
+                    logger.info("Retrying Deluge upload without applying a label.")
+                    delugeweb.add_torrent_magnet(
+                        magnet_link, save_directory=save_path, label=None
+                    )
+                else:
+                    raise
         else:
             return jsonify({'message': 'Unsupported download client'}), 400
 
         return jsonify({'message': f'Download added successfully! This may take some time, the download will show in Audiobookshelf when completed.'})
     except Exception as e:
+        logger.exception("Failed to send magnet link: %s", e)
         return jsonify({'message': str(e)}), 500
 @app.route('/status')
 def status():
@@ -239,6 +288,7 @@ def status():
             return jsonify({'message': 'Unsupported download client'}), 400
         return render_template('status.html', torrents=torrent_list)
     except Exception as e:
+        logger.exception("Failed to fetch torrent status: %s", e)
         return jsonify({'message': f"Failed to fetch torrent status: {e}"}), 500
 
 

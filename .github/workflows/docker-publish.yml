@@ -3,8 +3,7 @@ name: Build and Push Multi-Architecture Image
 on:
   push:
     branches:
-      - main
-      - copilot/fix-0618b1b8-7dd8-485f-813d-6dbf7c0dd4cd
+      - '**'
   workflow_dispatch: {}
 
 permissions:
